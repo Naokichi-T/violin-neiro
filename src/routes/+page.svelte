@@ -19,7 +19,7 @@
       path: "/longtone",
       title: "ロングトーン",
       description: "長く伸ばした音のぶれを測る",
-      ready: false,
+      ready: true,
     },
     {
       path: "/record",
