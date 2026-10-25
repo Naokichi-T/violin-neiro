@@ -229,6 +229,9 @@
   {playing ? "■ 止める" : "▶ 鳴らす"}
 </button>
 
+<!-- iPhone の消音モード（横のスイッチ）がオンだと、ブラウザの音が出ないことがあるので、その案内（violin-pitch と同じ） -->
+<p class="note">iPhone で音が出ないときは、消音モードを解除してから、ページを開き直してください。</p>
+
 <style>
   /* ----- ホームへ戻るリンク ----- */
   .back {
@@ -392,5 +395,12 @@
     background: var(--card-bg);
     color: var(--accent);
     border: 2px solid var(--accent);
+  }
+
+  /* ----- iPhone の消音モードの案内 ----- */
+  .note {
+    margin: 12px 0 0;
+    font-size: 0.8rem;
+    color: var(--text-sub);
   }
 </style>

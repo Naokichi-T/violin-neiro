@@ -197,8 +197,9 @@
       await startMicrophone(handlePitch);
     } catch (error) {
       // マイクの使用を断られた・マイクがないなど
+      // microphone.js が理由を日本語で書いたメッセージを投げるので、それをそのまま出す
       status = "idle";
-      errorMessage = "マイクを使えませんでした。ブラウザの設定で、このページのマイクの使用を許可してください。";
+      errorMessage = error instanceof Error ? error.message : "マイクを使えませんでした。";
     }
   }
 
