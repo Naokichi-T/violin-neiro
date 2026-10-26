@@ -1,5 +1,5 @@
 // ===== 録音のページの設定をブラウザに保存・読み込みする仕組み =====
-// 選んだ音律と調を覚えておき、次に開いたときも同じ設定で始められるようにする。
+// 選んだ音律・調と、メトロノームの設定を覚えておき、次に開いたときも同じ設定で始められるようにする。
 
 // 調の id が正しいかを確かめる関数
 import { getKey, DEFAULT_KEY_ID } from "./key.js";
@@ -15,18 +15,49 @@ export const RECORD_TEMPERAMENTS = [
   { id: "just", name: "純正律" },
 ];
 
+// メトロノームのテンポの範囲
+export const TEMPO_MIN = 40;
+export const TEMPO_MAX = 208;
+
+// メトロノームの拍子の選択肢（0 は「なし」＝1拍目の高い音を鳴らさない）
+export const BEATS_OPTIONS = [0, 2, 3, 4, 6];
+
 // 設定の最初の値
 //   temperamentId ：音律の id
 //   keyId         ：調の id
+//   metronomeOn   ：メトロノームを使うか
+//   tempo         ：テンポ（♩＝）
+//   beats         ：拍子（0 は「なし」）
+//   clickVolume   ：クリックの音量（0〜100）
 export const DEFAULT_RECORD_SETTINGS = {
   temperamentId: "pythagorean",
   keyId: DEFAULT_KEY_ID,
+  metronomeOn: false,
+  tempo: 80,
+  beats: 4,
+  clickVolume: 70,
 };
+
+/**
+ * 数を、決めた範囲の整数に収める関数（数でないときは、代わりの値を返す）
+ * @param {any} value - 調べる値
+ * @param {number} min - 下限
+ * @param {number} max - 上限
+ * @param {number} fallback - 数でないときに使う値
+ * @returns {number} 範囲に収めた整数
+ */
+function clampNumber(value, min, max, fallback) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(Math.max(Math.round(value), min), max);
+}
 
 /**
  * 保存しておいた設定を読み込む関数
  * 保存がないとき・読めないとき・おかしな値のときは、最初の値を使う。
- * @returns {{temperamentId: string, keyId: string}} 設定
+ * （前の版で保存した、メトロノームの設定がない保存でも、メトロノームの分は最初の値になる）
+ * @returns {{temperamentId: string, keyId: string, metronomeOn: boolean, tempo: number, beats: number, clickVolume: number}} 設定
  */
 export function loadRecordSettings() {
   try {
@@ -41,6 +72,12 @@ export function loadRecordSettings() {
       temperamentId: RECORD_TEMPERAMENTS.some((t) => t.id === saved.temperamentId) ? saved.temperamentId : DEFAULT_RECORD_SETTINGS.temperamentId,
       // 知らない id のときは getKey がハ長調を返すので、その id を使う
       keyId: getKey(saved.keyId).id,
+      // true のときだけメトロノームを使う
+      metronomeOn: saved.metronomeOn === true,
+      tempo: clampNumber(saved.tempo, TEMPO_MIN, TEMPO_MAX, DEFAULT_RECORD_SETTINGS.tempo),
+      // 選択肢のどれかでなければ、最初の値
+      beats: BEATS_OPTIONS.includes(saved.beats) ? saved.beats : DEFAULT_RECORD_SETTINGS.beats,
+      clickVolume: clampNumber(saved.clickVolume, 0, 100, DEFAULT_RECORD_SETTINGS.clickVolume),
     };
   } catch (error) {
     return { ...DEFAULT_RECORD_SETTINGS };
@@ -49,7 +86,7 @@ export function loadRecordSettings() {
 
 /**
  * 設定をブラウザに保存する関数
- * @param {{temperamentId: string, keyId: string}} settings - 設定
+ * @param {{temperamentId: string, keyId: string, metronomeOn: boolean, tempo: number, beats: number, clickVolume: number}} settings - 設定
  */
 export function saveRecordSettings(settings) {
   try {

@@ -31,8 +31,15 @@
   // 画面が暗くならないようにする関数
   import { keepScreenOn, allowScreenOff } from "#lib/wakeLock.js";
 
-  // 設定（音律・調）の保存と読み込み
-  import { RECORD_TEMPERAMENTS, DEFAULT_RECORD_SETTINGS, loadRecordSettings, saveRecordSettings } from "#lib/recordSettings.js";
+  // メトロノーム（クリックを鳴らす・クリックの音を見分ける）
+  import { prepareMetronome, startMetronome, updateMetronome, stopMetronome, isClickNoise, playTapSound } from "#lib/metronome.js";
+
+  // テンポの速さの言葉の目安と、タップテンポ
+  import { getTempoTerm } from "#lib/tempoTerms.js";
+  import { tap } from "#lib/tapTempo.js";
+
+  // 設定（音律・調・メトロノーム）の保存と読み込み
+  import { RECORD_TEMPERAMENTS, DEFAULT_RECORD_SETTINGS, TEMPO_MIN, TEMPO_MAX, BEATS_OPTIONS, loadRecordSettings, saveRecordSettings } from "#lib/recordSettings.js";
 
   // ===== 設定値 =====
 
@@ -52,6 +59,21 @@
 
   // 選んでいる調の id
   let keyId = $state(DEFAULT_RECORD_SETTINGS.keyId);
+
+  // メトロノームを使うか・テンポ（♩＝）・拍子（0 は「なし」）・クリックの音量（0〜100）
+  let metronomeOn = $state(DEFAULT_RECORD_SETTINGS.metronomeOn);
+  let tempo = $state(DEFAULT_RECORD_SETTINGS.tempo);
+  let beats = $state(DEFAULT_RECORD_SETTINGS.beats);
+  let clickVolume = $state(DEFAULT_RECORD_SETTINGS.clickVolume);
+
+  // 「試しに鳴らす」で、録音せずにクリックだけ鳴らしているかどうか
+  let previewing = $state(false);
+
+  // 今光らせている拍の丸（小節の中で何拍目か。0 が1拍目）。光っていないときは null
+  let litBeat = $state(null);
+
+  // タップテンポのボタンを押した回数（数え直すと 1 に戻る）
+  let tapCount = $state(0);
 
   // 保存しておいた設定を読み込み終わったかどうか（最初の値で保存を上書きしないため）
   let loaded = $state(false);
@@ -125,6 +147,15 @@
   // 再生中に縦線を動かす処理の予約番号
   let playbackFrameId = null;
 
+  // メトロノームを今鳴らしているかどうか
+  let metronomeActive = false;
+
+  // 光らせた丸を消す予約の番号
+  let lightTimer = null;
+
+  // 丸を光らせておく時間（ミリ秒）
+  const LIGHT_MILLISECONDS = 120;
+
   // ===== 計算する値 =====
 
   // 選んでいる調のデータと、その音階
@@ -133,6 +164,12 @@
 
   // 録音中・待っている間かどうか
   const running = $derived(status === "waiting" || status === "recording");
+
+  // 今のテンポの、速さの言葉の目安（例：Andante）
+  const tempoTerm = $derived(getTempoTerm(tempo));
+
+  // 拍の丸の数（拍子が「なし」のときは1つ）
+  const dotCount = $derived(beats === 0 ? 1 : beats);
 
   // 今聞こえている音に一番近い音と、そこからのずれ（録音中に表示する）
   const currentNearest = $derived(currentFrequency !== null ? findNearestNoteInKey(currentFrequency, key, temperamentId) : null);
@@ -167,13 +204,18 @@
     const saved = loadRecordSettings();
     temperamentId = saved.temperamentId;
     keyId = saved.keyId;
+    metronomeOn = saved.metronomeOn;
+    tempo = saved.tempo;
+    beats = saved.beats;
+    clickVolume = saved.clickVolume;
     loaded = true;
 
     // 保存した録音の一覧を読み込む
     refreshHistory();
 
-    // ページを離れるときは、録音・マイク・再生を全部止めて片付ける
+    // ページを離れるときは、録音・マイク・メトロノーム・再生を全部止めて片付ける
     return () => {
+      stopMetronome();
       cancelRecorder();
       stopMicrophone();
       allowScreenOff();
@@ -184,11 +226,96 @@
   // 設定が変わったら、ブラウザに保存する
   $effect(() => {
     // 中で使う値を先に読んで、どれが変わってもこの処理が呼ばれるようにする
-    const settings = { temperamentId, keyId };
+    const settings = { temperamentId, keyId, metronomeOn, tempo, beats, clickVolume };
     if (loaded) {
       saveRecordSettings(settings);
     }
   });
+
+  // メトロノームを鳴らす・止める・設定を変える
+  // 録音中（待っている間も）でメトロノームがオンのとき、または「試しに鳴らす」のときは鳴らし、それ以外は止める。
+  // 鳴らしている途中にテンポ・拍子・音量を変えたら、次のクリックから変わる。
+  $effect(() => {
+    // 中で使う値を先に読んで、どれが変わってもこの処理が呼ばれるようにする
+    const metronomeSettings = { tempo, beats, volume: clickVolume };
+    const shouldPlay = (running && metronomeOn) || previewing;
+
+    if (shouldPlay && !metronomeActive) {
+      startMetronome(metronomeSettings, handleBeat);
+      metronomeActive = true;
+    } else if (shouldPlay && metronomeActive) {
+      updateMetronome(metronomeSettings);
+    } else if (!shouldPlay && metronomeActive) {
+      stopMetronome();
+      metronomeActive = false;
+    }
+  });
+
+  /**
+   * テンポを変える関数（−10・−1・＋1・＋10 のボタン）
+   * @param {number} amount - 増やす量（減らすときはマイナス）
+   */
+  function changeTempo(amount) {
+    tempo = Math.min(Math.max(tempo + amount, TEMPO_MIN), TEMPO_MAX);
+  }
+
+  /**
+   * クリックが鳴るたびに呼ばれる関数：その拍の丸を少しの間だけ光らせる
+   * @param {number} beatInBar - 小節の中で何拍目か（0 が1拍目）
+   */
+  function handleBeat(beatInBar) {
+    litBeat = beatInBar;
+    clearTimeout(lightTimer);
+    lightTimer = setTimeout(() => {
+      litBeat = null;
+    }, LIGHT_MILLISECONDS);
+  }
+
+  /**
+   * 「メトロノームを鳴らす」のチェックを変えたときの関数
+   * オフにしたら、「試しに鳴らす」も止める（オンに戻したときに勝手に鳴り出さないように）。
+   */
+  function handleMetronomeToggle() {
+    if (!metronomeOn) {
+      previewing = false;
+    }
+  }
+
+  /**
+   * 「試しに鳴らす」「止める」ボタンを押したときの関数（録音はしない）
+   */
+  function togglePreview() {
+    // iPhone・iPad では、ボタンを押した瞬間に音の土台を用意しないと鳴らない
+    prepareMetronome();
+    previewing = !previewing;
+  }
+
+  /**
+   * タップテンポのボタンを押したときの関数
+   * 試しに鳴らしていたら止めて、「ポッ」と鳴らし、押した間隔からテンポを求めて、そのままテンポを変える。
+   */
+  function handleTap() {
+    // クリックとタップの音が混ざらないように、試しに鳴らすのは止める
+    previewing = false;
+    playTapSound();
+
+    const result = tap(performance.now());
+    tapCount = result.count;
+    if (result.tempo !== null) {
+      tempo = Math.min(Math.max(result.tempo, TEMPO_MIN), TEMPO_MAX);
+    }
+  }
+
+  /**
+   * タップテンポのボタンでキーを押したときの関数（キーボードでも使えるように、Enter とスペースで押したことにする）
+   * @param {KeyboardEvent} event - キーを押したときの情報
+   */
+  function handleTapKey(event) {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      handleTap();
+    }
+  }
 
   // ===== 前の録音の一覧 =====
 
@@ -262,6 +389,13 @@
    * （止めた録音は保存してあるので、一覧から見比べられる）
    */
   async function start() {
+    // クリックを鳴らす準備（iPhone・iPad では、ボタンを押した瞬間に音の土台を作らないと鳴らないので、
+    // マイクの許可を待つ前に用意しておく。メトロノームがオフでも、録音中にオンにできるように用意する）
+    prepareMetronome();
+
+    // 「試しに鳴らす」は終わりにする（メトロノームがオンなら、そのまま録音用のクリックとして鳴り続ける）
+    previewing = false;
+
     // 前の録音と結果を手放す
     releaseAudio();
     errorMessage = "";
@@ -312,6 +446,12 @@
    * @param {number} now - 今の時刻（秒）
    */
   function handlePitch(frequency, now) {
+    // メトロノームのクリックの音を拾ったときは、音がなかったことにする
+    // （弾く前のクリックで録音が始まったり、グラフに変な点が出たりしないように）
+    if (isClickNoise(now, frequency)) {
+      frequency = null;
+    }
+
     // ----- 弾き始めるのを待っているとき -----
     if (status === "waiting") {
       // 録音がまだ始まっていない・音が出ていないときは、待ち続ける
@@ -402,6 +542,8 @@
         duration,
         keyId,
         temperamentId,
+        // メトロノームを使ったときだけ、テンポも保存する（一覧に「♩=80」と出す）
+        tempo: metronomeOn ? tempo : null,
         samples,
       });
       await refreshHistory();
@@ -652,6 +794,77 @@
   </div>
 </section>
 
+<!-- ===== メトロノーム ===== -->
+<section class="metronome">
+  <label class="check">
+    <input type="checkbox" bind:checked={metronomeOn} onchange={handleMetronomeToggle} />
+    メトロノームを鳴らす（「● 録音」を押すと鳴り始めます）
+  </label>
+
+  {#if metronomeOn}
+    <!-- テンポ -->
+    <div class="row">
+      <span class="label">テンポ</span>
+      <div class="tempo-group">
+        <button type="button" class="tempo-button" onclick={() => changeTempo(-10)}>−10</button>
+        <button type="button" class="tempo-button" onclick={() => changeTempo(-1)}>−1</button>
+        <span class="tempo-value">♩={tempo}</span>
+        <button type="button" class="tempo-button" onclick={() => changeTempo(1)}>＋1</button>
+        <button type="button" class="tempo-button" onclick={() => changeTempo(10)}>＋10</button>
+      </div>
+    </div>
+
+    <!-- 速さの言葉の目安（例：Andante（アンダンテ）歩くくらいの速さ） -->
+    <p class="tempo-term">
+      目安：{tempoTerm.name}（{tempoTerm.reading}）{tempoTerm.meaning}
+    </p>
+
+    <!-- 試しに鳴らす・タップテンポ（録音中は使えない） -->
+    <div class="tempo-tools">
+      <button type="button" class="sub-button" class:active={previewing} disabled={running} onclick={togglePreview}>
+        {previewing ? "■ 止める" : "▶ 試しに鳴らす"}
+      </button>
+      <!-- 押した瞬間に反応するように、指やマウスが触れたとき（pointerdown）に数える -->
+      <button type="button" class="sub-button tap-button" disabled={running} onpointerdown={handleTap} onkeydown={handleTapKey}>
+        タップ{tapCount > 0 ? "（" + tapCount + "回）" : ""}
+      </button>
+    </div>
+    <p class="metronome-note">タップ：曲の拍に合わせて何回か押すと、その速さがテンポになります（2秒あけると数え直し）。</p>
+
+    <!-- 拍に合わせて光る丸（1拍目は大きい） -->
+    <div class="beat-dots" aria-hidden="true">
+      {#each Array.from({ length: dotCount }, (_, i) => i) as index (index)}
+        <span class="beat-dot" class:accent={beats > 0 && index === 0} class:lit={litBeat === index}></span>
+      {/each}
+    </div>
+
+    <!-- 拍子（1拍目は高い音。「なし」はすべて同じ音） -->
+    <div class="row">
+      <span class="label">拍子</span>
+      <div class="toggle-group" role="group" aria-label="拍子">
+        {#each BEATS_OPTIONS as option (option)}
+          <button type="button" class="toggle" aria-pressed={beats === option} onclick={() => (beats = option)}>
+            {option === 0 ? "なし" : option}
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    <!-- クリックの音量 -->
+    <div class="row">
+      <label class="label" for="click-volume">音量</label>
+      <div class="field volume-field">
+        <input id="click-volume" class="slider" type="range" min="0" max="100" step="1" bind:value={clickVolume} />
+        <span class="volume-value">{clickVolume}</span>
+      </div>
+    </div>
+
+    <p class="metronome-note">
+      クリックの音は録音のファイルにも入りますが、録音を始めるきっかけと音程のグラフには使いません。iPhone でクリックが鳴らないときは、消音モードを解除してから、ページを開き直してください。
+    </p>
+  {/if}
+</section>
+
 <!-- ===== 今の様子 ===== -->
 <div class="now">
   {#if status === "idle"}
@@ -745,7 +958,11 @@
               {item.starred ? "★" : "☆"}
             </button>
             <span class="history-date">{formatDate(item.createdAt)}</span>
-            <span class="history-duration">{formatTime(item.duration)}</span>
+            <span class="history-duration">
+              {formatTime(item.duration)}
+              <!-- メトロノームを使った録音は、テンポも出す -->
+              {#if item.tempo}<span class="history-tempo">♩={item.tempo}</span>{/if}
+            </span>
             <!-- 見比べるボタン（今の録音と、もう表示している録音には出さない） -->
             {#if item.id === currentId}
               <span class="history-tag">今の録音</span>
@@ -847,6 +1064,141 @@
     margin: 4px 0 0;
     font-size: 0.85rem;
     color: var(--text-sub);
+  }
+
+  /* ----- メトロノーム ----- */
+  .metronome {
+    margin-bottom: 16px;
+  }
+
+  /* 「メトロノームを鳴らす」のチェック */
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+
+  .check input {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+  }
+
+  /* テンポのボタンと数字を1行に並べる */
+  .tempo-group {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tempo-button {
+    flex: 1;
+    padding: 8px 0;
+    font-size: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card-bg);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .tempo-value {
+    /* 数字が変わってもボタンの位置が動かないように、幅をそろえる */
+    flex: 0 0 4.5em;
+    text-align: center;
+    font-weight: bold;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 音量のつまみ */
+  .volume-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 6px;
+  }
+
+  .slider {
+    flex: 1;
+    accent-color: var(--accent);
+  }
+
+  .volume-value {
+    width: 2.5em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-sub);
+  }
+
+  .metronome-note {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--text-sub);
+  }
+
+  /* 速さの言葉の目安 */
+  .tempo-term {
+    margin: -8px 0 12px calc(3em + 12px);
+    font-size: 0.85rem;
+    color: var(--text-sub);
+  }
+
+  /* 試しに鳴らす・タップのボタン */
+  .tempo-tools {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  /* 試しに鳴らしている間は、緑で塗って分かるようにする */
+  .sub-button.active {
+    background: var(--accent);
+    color: #ffffff;
+  }
+
+  .sub-button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  /* タップのボタンは、連打しやすいように少し高くし、長押しのメニューや拡大が出ないようにする */
+  .tap-button {
+    padding: 14px 10px;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* 拍に合わせて光る丸 */
+  .beat-dots {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 0;
+  }
+
+  .beat-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--border);
+  }
+
+  /* 1拍目の丸は大きくする */
+  .beat-dot.accent {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* 鳴ったときに光る */
+  .beat-dot.lit {
+    background: var(--accent);
   }
 
   /* ----- 今の様子 ----- */
@@ -1052,6 +1404,10 @@
     font-variant-numeric: tabular-nums;
     /* 右側のボタンを右端に寄せる */
     margin-right: auto;
+  }
+
+  .history-tempo {
+    margin-left: 6px;
   }
 
   .history-tag {
