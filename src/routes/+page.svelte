@@ -25,7 +25,7 @@
       path: "/record",
       title: "録音して聴き返す",
       description: "録音と音程のグラフで振り返る",
-      ready: false,
+      ready: true,
     },
   ];
 </script>

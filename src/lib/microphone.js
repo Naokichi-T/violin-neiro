@@ -6,6 +6,7 @@
 //   → 波形を取り出す部品（Analyser） → 音量0の部品 → スピーカー（音は出ない）
 //   画面の書き換えのたび（1秒に約60回）に波形を取り出す → detectPitch で周波数を求める
 //   → 呼び出し元の関数（onPitch）に「周波数」と「時刻」を渡す
+//   （録音のページでは、音を大きくする部品のあとから、録音に渡す出口にもつなぐ。createRecordingStream）
 //
 // 【iPad・iPhone でマイクの音を拾わないのを直した手直し】（violin-pitch と同じ直し方）
 //   ① 音程を正しく測るため、エコー除去・雑音除去・音量の自動調整をオフにして頼むと、
@@ -53,6 +54,10 @@ let analyser = null;
 
 // 音量0の部品（波形を取り出す部品からスピーカーまでつなぐのに使う。音は出ない）
 let silentNode = null;
+
+// 録音に渡すための音の出口（録音するときだけ作る）
+// iPad・iPhone でも録音の音が小さくならないように、30倍にしたあとの音を渡す
+let recordingNode = null;
 
 // 取り出した波形を入れておく入れ物
 let buffer = null;
@@ -192,6 +197,29 @@ export async function startMicrophone(onPitch) {
 }
 
 /**
+ * 録音に使う音の流れを作って返す関数（録音のページで使う）
+ * マイクの音を大きくする部品（iPad・iPhone では30倍）のあとから取り出すので、
+ * iPad・iPhone でも、録音した音が小さくなりすぎない。
+ * startMicrophone が終わったあとに呼ぶこと。
+ * @returns {MediaStream|null} 録音に使う音の流れ。マイクが動いていないときは null
+ */
+export function createRecordingStream() {
+  if (audioContext === null || inputGainNode === null) {
+    return null;
+  }
+
+  // 前に作ったものがあれば外してから作り直す
+  if (recordingNode !== null) {
+    recordingNode.disconnect();
+  }
+
+  // 音を大きくする部品 → 録音に渡す出口、とつなぐ
+  recordingNode = audioContext.createMediaStreamDestination();
+  inputGainNode.connect(recordingNode);
+  return recordingNode.stream;
+}
+
+/**
  * マイクをオフにして、音程を調べるのをやめる関数
  * 動いていないときに呼んでも、何もしない。
  */
@@ -217,6 +245,10 @@ export function stopMicrophone() {
   if (silentNode !== null) {
     silentNode.disconnect();
     silentNode = null;
+  }
+  if (recordingNode !== null) {
+    recordingNode.disconnect();
+    recordingNode = null;
   }
   analyser = null;
   buffer = null;
