@@ -1,3 +1,7 @@
-# allow crawling everything by default
+# 検索エンジン（Google など）への案内
+# すべてのページを検索に載せてよい
 User-agent: *
-Disallow:
+Allow: /
+
+# ページの一覧（サイトマップ）の場所
+Sitemap: https://violin-neiro.vercel.app/sitemap.xml

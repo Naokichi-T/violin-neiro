@@ -2,6 +2,9 @@
   // ===== ドローンのページ =====
   // 調の主音（と5度の音）を鳴らし続けて、その響きに合わせて音程を練習する
 
+  // ページのタイトル・説明文・OGP をまとめて出す部品
+  import PageMeta from "#lib/PageMeta.svelte";
+
   import { onMount } from "svelte";
 
   // 調の一覧と、調に関する関数
@@ -159,10 +162,8 @@
   }
 </script>
 
-<svelte:head>
-  <title>ドローン｜バイオリン音色練習</title>
-  <meta name="description" content="調の主音を鳴らし続けて、響きで音程を合わせるバイオリンの練習ページ" />
-</svelte:head>
+<!-- ページのタイトル・説明文・OGP（リンクを送ったときに出る画像など） -->
+<PageMeta title="ドローン｜バイオリン音色練習" description="調の主音（と5度の音）を鳴らし続けて、響きで音程を合わせるバイオリンの練習ページ。ピタゴラス音律・ラ＝442Hz。" path="/drone" />
 
 <!-- ===== ホームへ戻るリンクと見出し ===== -->
 <a class="back" href="/">← ホーム</a>

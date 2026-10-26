@@ -2,8 +2,7 @@
   // ===== すべてのページで共通のレイアウト =====
   // ここに書いた見た目（色・文字の大きさなど）は、どのページにも効く
 
-  // ファビコン（ブラウザのタブに出る小さな絵）。
-  // 今は sv create が用意したものをそのまま使い、ステップ5で自分の絵に差し替える
+  // ファビコン（ブラウザのタブに出る小さな絵）。緑の丸に、音符とビブラートのような音の波
   // SvelteKit 3 からは、src/lib の中のファイルを $lib ではなく #lib で読み込む
   // （#lib は package.json の "imports" で src/lib を指すように決めてある）
   import favicon from "#lib/assets/favicon.svg";
@@ -14,7 +13,9 @@
 
 <svelte:head>
   <!-- ファビコンの指定 -->
-  <link rel="icon" href={favicon} />
+  <link rel="icon" href={favicon} type="image/svg+xml" />
+  <!-- iPhone などで「ホーム画面に追加」したときのアイコン（static フォルダの apple-touch-icon.png、180×180） -->
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 </svelte:head>
 
 <!-- 各ページの中身を、共通の枠（main）の中に表示する -->
