@@ -22,6 +22,9 @@
   // 画面が暗くならないようにする関数
   import { keepScreenOn, allowScreenOff } from "#lib/wakeLock.js";
 
+  // 調ごとの「音の合わせ方」の表を作る関数
+  import { getDroneGuideRows } from "#lib/droneGuide.js";
+
   // 設定の保存・読み込み
   import { DEFAULT_DRONE_SETTINGS, loadDroneSettings, saveDroneSettings } from "#lib/droneSettings.js";
 
@@ -39,6 +42,9 @@
   // 音量のつまみの値（0〜100）
   let volume = $state(DEFAULT_DRONE_SETTINGS.volume);
 
+  // 「この調の音の合わせ方」の表を開いているか
+  let guideOpen = $state(DEFAULT_DRONE_SETTINGS.guideOpen);
+
   // 今鳴らしているかどうか
   let playing = $state(false);
 
@@ -50,6 +56,9 @@
 
   // 選んでいる調のデータ
   const key = $derived(getKey(keyId));
+
+  // 「この調の音の合わせ方」の表の行（調を変えると切り替わる）
+  const guideRows = $derived(getDroneGuideRows(key));
 
   // 調の音階（例：['レ', 'ミ', 'ファ♯', …]）
   const scaleNames = $derived(getScaleNames(key));
@@ -92,6 +101,7 @@
     withFifth = saved.withFifth;
     octave = saved.octave;
     volume = saved.volume;
+    guideOpen = saved.guideOpen;
     loaded = true;
 
     // ページを離れるときに呼ばれる：音を止めて、画面が暗くなってもよい状態に戻す
@@ -117,7 +127,7 @@
   // 設定が変わったら、ブラウザに保存する
   $effect(() => {
     // 中で使う値を先に読んで、どれが変わってもこの処理が呼ばれるようにする
-    const settings = { keyId, withFifth, octave, volume };
+    const settings = { keyId, withFifth, octave, volume, guideOpen };
 
     // 読み込みが終わるまでは保存しない（最初の値で上書きしないため）
     if (loaded) {
@@ -160,6 +170,22 @@
   function formatHz(frequency) {
     return frequency.toFixed(1);
   }
+
+  /**
+   * ずれ（セント）を、符号付きの整数の文字にする関数（表の「チューナーの目安」に使う）
+   * @param {number} cents - ずれ（セント）
+   * @returns {string} 例：'+2'、'−16'、'±0'
+   */
+  function formatCents(cents) {
+    const rounded = Math.round(cents);
+    if (rounded > 0) {
+      return "+" + rounded;
+    } else if (rounded < 0) {
+      return "−" + Math.abs(rounded);
+    } else {
+      return "±0";
+    }
+  }
 </script>
 
 <!-- ページのタイトル・説明文・OGP（リンクを送ったときに出る画像など） -->
@@ -169,6 +195,8 @@
 <a class="back" href="/">← ホーム</a>
 <h1 class="title">ドローン</h1>
 <p class="lead">音を鳴らし続けながら音階や曲を弾き、響きのうなり（ワンワンという揺れ）が消える高さを探します。</p>
+<!-- 使い方の説明のページへ -->
+<a class="guide-link" href="/drone/guide">使い方を見る →</a>
 
 <!-- ===== 調を選ぶ ===== -->
 <section class="row">
@@ -182,6 +210,51 @@
     <!-- 選んだ調の音階を小さく表示する（どの音に♯・♭が付くかの確認用） -->
     <p class="scale">{scaleNames.join(" ")}</p>
   </div>
+</section>
+
+<!-- ===== この調の音の合わせ方（押すと開く表） ===== -->
+<section class="guide">
+  <!-- 開く・閉じるボタン（鳴らしたままでも押せる。開いた・閉じたは保存する） -->
+  <button type="button" class="guide-toggle" aria-expanded={guideOpen} aria-controls="guide-table" onclick={() => (guideOpen = !guideOpen)}>
+    この調の音の合わせ方 {guideOpen ? "▲" : "▼"}
+  </button>
+
+  {#if guideOpen}
+    <div id="guide-table" class="guide-table">
+      <!-- 見出しの行 -->
+      <div class="guide-head">
+        <span>音</span>
+        <span>主音との音程</span>
+        <span class="guide-cents">チューナーの目安</span>
+      </div>
+
+      <!-- 音階の音ごとの行（1段目：音・音程・チューナーの目安、2段目：うなりと合わせ方） -->
+      {#each guideRows as row (row.degree)}
+        <div class="guide-row">
+          <div class="guide-main">
+            <span class="guide-name">
+              <!-- うなりの消えやすさの印（緑の●＝はっきり、黄の●＝聞き分けにくい、灰の○＝消えない） -->
+              <span class="dot dot-{row.clarity}" aria-hidden="true">{row.clarity === "none" ? "○" : "●"}</span>
+              {row.name}
+            </span>
+            <span>{row.intervalName}</span>
+            <span class="guide-cents">{formatCents(row.centsFromEqual)}</span>
+          </div>
+          <p class="guide-sub">{row.clarityText}。{row.how}</p>
+        </div>
+      {/each}
+
+      <!-- 印と「チューナーの目安」の説明 -->
+      <p class="guide-note">
+        <span class="dot dot-clear">●</span>うなりがはっきり消える
+        <span class="dot dot-soft">●</span>聞き分けにくい
+        <span class="dot dot-none">○</span>消えない
+      </p>
+      <p class="guide-note">
+        チューナーの目安：響きが合う高さ（純正律）を、ふつうのチューナー（平均律・ラ＝442Hz）で見たときのずれ（セント）。表の見方は<a href="/drone/guide">使い方</a>に書いてあります。
+      </p>
+    </div>
+  {/if}
 </section>
 
 <!-- ===== 鳴らす音を選ぶ（主音だけ／主音＋5度） ===== -->
@@ -241,6 +314,112 @@
     color: var(--accent);
     text-decoration: none;
     font-size: 0.95rem;
+  }
+
+  /* ----- 使い方のページへのリンク ----- */
+  .guide-link {
+    display: inline-block;
+    margin: -12px 0 20px;
+    color: var(--accent);
+    font-size: 0.9rem;
+  }
+
+  /* ----- この調の音の合わせ方（表） ----- */
+  .guide {
+    margin: -4px 0 16px;
+  }
+
+  .guide-toggle {
+    width: 100%;
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card-bg);
+    color: var(--accent);
+    cursor: pointer;
+  }
+
+  .guide-table {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
+  /* 見出しの行と、各行の1段目は、同じ3つの列にそろえる */
+  .guide-head,
+  .guide-main {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr 1fr;
+    gap: 8px;
+    align-items: baseline;
+  }
+
+  .guide-head {
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.75rem;
+    color: var(--text-sub);
+  }
+
+  .guide-row {
+    padding: 6px 0;
+    border-bottom: 1px solid #eeeeee;
+  }
+
+  .guide-main {
+    font-size: 0.95rem;
+  }
+
+  .guide-name {
+    font-weight: bold;
+  }
+
+  /* チューナーの目安は右にそろえる */
+  .guide-cents {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 2段目（うなりと合わせ方）は小さく */
+  .guide-sub {
+    margin: 2px 0 0;
+    font-size: 0.8rem;
+    color: var(--text-sub);
+  }
+
+  .guide-note {
+    margin: 8px 0 0;
+    font-size: 0.75rem;
+    color: var(--text-sub);
+  }
+
+  .guide-note a {
+    color: var(--accent);
+  }
+
+  /* うなりの消えやすさの印 */
+  .dot {
+    margin-right: 2px;
+  }
+
+  .dot-clear {
+    color: var(--accent);
+  }
+
+  .dot-soft {
+    color: #e0a12f;
+  }
+
+  .dot-none {
+    color: #9a9a9a;
+  }
+
+  .guide-note .dot {
+    margin-left: 6px;
   }
 
   /* ----- 見出しと説明 ----- */

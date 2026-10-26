@@ -9,6 +9,10 @@
   <url>
     <loc>https://violin-neiro.vercel.app/drone</loc>
   </url>
+  <!-- ドローンの使い方 -->
+  <url>
+    <loc>https://violin-neiro.vercel.app/drone/guide</loc>
+  </url>
   <!-- ロングトーン・ビブラート -->
   <url>
     <loc>https://violin-neiro.vercel.app/longtone</loc>
