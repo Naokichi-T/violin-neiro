@@ -29,6 +29,7 @@ export const BEATS_OPTIONS = [0, 2, 3, 4, 6];
 //   tempo         ：テンポ（♩＝）
 //   beats         ：拍子（0 は「なし」）
 //   clickVolume   ：クリックの音量（0〜100）
+//   showBeatLines ：グラフに拍の線を出すか
 export const DEFAULT_RECORD_SETTINGS = {
   temperamentId: "pythagorean",
   keyId: DEFAULT_KEY_ID,
@@ -36,6 +37,7 @@ export const DEFAULT_RECORD_SETTINGS = {
   tempo: 80,
   beats: 4,
   clickVolume: 70,
+  showBeatLines: true,
 };
 
 /**
@@ -57,7 +59,7 @@ function clampNumber(value, min, max, fallback) {
  * 保存しておいた設定を読み込む関数
  * 保存がないとき・読めないとき・おかしな値のときは、最初の値を使う。
  * （前の版で保存した、メトロノームの設定がない保存でも、メトロノームの分は最初の値になる）
- * @returns {{temperamentId: string, keyId: string, metronomeOn: boolean, tempo: number, beats: number, clickVolume: number}} 設定
+ * @returns {{temperamentId: string, keyId: string, metronomeOn: boolean, tempo: number, beats: number, clickVolume: number, showBeatLines: boolean}} 設定
  */
 export function loadRecordSettings() {
   try {
@@ -78,6 +80,8 @@ export function loadRecordSettings() {
       // 選択肢のどれかでなければ、最初の値
       beats: BEATS_OPTIONS.includes(saved.beats) ? saved.beats : DEFAULT_RECORD_SETTINGS.beats,
       clickVolume: clampNumber(saved.clickVolume, 0, 100, DEFAULT_RECORD_SETTINGS.clickVolume),
+      // false のときだけ出さない（前の版の保存で、この設定がないときは出す）
+      showBeatLines: saved.showBeatLines !== false,
     };
   } catch (error) {
     return { ...DEFAULT_RECORD_SETTINGS };
@@ -86,7 +90,7 @@ export function loadRecordSettings() {
 
 /**
  * 設定をブラウザに保存する関数
- * @param {{temperamentId: string, keyId: string, metronomeOn: boolean, tempo: number, beats: number, clickVolume: number}} settings - 設定
+ * @param {{temperamentId: string, keyId: string, metronomeOn: boolean, tempo: number, beats: number, clickVolume: number, showBeatLines: boolean}} settings - 設定
  */
 export function saveRecordSettings(settings) {
   try {

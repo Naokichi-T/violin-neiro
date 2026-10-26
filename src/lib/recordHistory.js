@@ -30,7 +30,8 @@ export const MAX_UNSTARRED = 5;
 //   starred       ：★が付いているか
 //   memo          ：メモ（曲名など）
 //   tempo         ：メトロノームのテンポ（♩＝）。メトロノームを使わなかったときは null
-//   samples      ：音程のデータ（time はグラフの左端からの秒、frequency は周波数）
+//   beatMarks     ：メトロノームのクリックが鳴った位置（time はグラフの左端からの秒、downbeat は小節の頭か）。グラフの拍の線に使う
+//   samples     ：音程のデータ（time はグラフの左端からの秒、frequency は周波数）
 
 /**
  * 保存する録音のデータの形を、VSCode にも分かるように名前を付けて定義しておく（中身は上のコメントと同じ）
@@ -44,6 +45,7 @@ export const MAX_UNSTARRED = 5;
  * @property {boolean} starred - ★が付いているか
  * @property {string} memo - メモ
  * @property {number|null} [tempo] - メトロノームのテンポ（使わなかったとき・前の版で保存した録音は null かなし）
+ * @property {{time: number, downbeat: boolean}[]} [beatMarks] - クリックが鳴った位置（使わなかったときは空。前の版で保存した録音はなし）
  * @property {{time: number, frequency: number}[]} samples - 音程のデータ
  */
 
@@ -125,7 +127,7 @@ async function pruneRecordings() {
 
 /**
  * 録音を保存する関数（保存したあと、古い録音を消す）
- * @param {{createdAt: number, duration: number, keyId: string, temperamentId: string, tempo: number|null, samples: {time: number, frequency: number}[]}} data - 保存する録音（tempo はメトロノームのテンポ。使わなかったときは null）
+ * @param {{createdAt: number, duration: number, keyId: string, temperamentId: string, tempo: number|null, beatMarks: {time: number, downbeat: boolean}[], samples: {time: number, frequency: number}[]}} data - 保存する録音（tempo はメトロノームのテンポ。使わなかったときは null、beatMarks は空）
  * @returns {Promise<number>} 保存した録音の id
  */
 export async function saveRecording(data) {
@@ -144,6 +146,11 @@ export async function saveRecording(data) {
     starred: false,
     memo: "",
     tempo: data.tempo,
+    // クリックの位置も、時刻を1ミリ秒まで丸めて保存する
+    beatMarks: data.beatMarks.map((mark) => ({
+      time: Math.round(mark.time * 1000) / 1000,
+      downbeat: mark.downbeat,
+    })),
     samples,
   };
 

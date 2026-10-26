@@ -9,6 +9,7 @@
   // ===== 受け取る値 =====
   //   points        ：グラフの点（analyzeSamples の結果）
   //   labels        ：音名の札（makeNoteLabels の結果）
+  //   beatLines     ：拍の線（makeBeatLines の結果）。出さないときは空の配列
   //   duration      ：この録音の長さ（秒）。時刻の数字をどこまで出すかに使う
   //   width         ：グラフ本体の横幅（px）
   //   cursorTime    ：再生している位置（秒）。縦線を出さないときは null
@@ -16,7 +17,7 @@
   //   onscroll      ：横にスクロールしたときに呼ぶ関数（上下のグラフのスクロールを連動させるため）
   //   scroller      ：横スクロールの枠（呼び出し元からスクロール位置を動かせるように、受け渡しする）
   //   scrollerWidth ：横スクロールの枠の幅（px）（呼び出し元でグラフの横幅を決めるのに使う）
-  let { points, labels, duration, width, cursorTime = null, onseek = null, onscroll = null, scroller = $bindable(null), scrollerWidth = $bindable(0) } = $props();
+  let { points, labels, beatLines = [], duration, width, cursorTime = null, onseek = null, onscroll = null, scroller = $bindable(null), scrollerWidth = $bindable(0) } = $props();
 
   // ===== 設定値 =====
 
@@ -144,6 +145,15 @@
         <line class={value === 0 ? "graph-zero" : "graph-grid"} x1="0" x2={width} y1={centsToY(value)} y2={centsToY(value)} />
       {/each}
 
+      <!-- 拍の線（メトロノームのクリックが鳴った位置）。小節の頭は少し濃くして、小節の番号を付ける -->
+      <!-- 音の線より先に描いて、音の線が上に重なるようにする -->
+      {#each beatLines as beat, index (index)}
+        <line class={beat.downbeat ? "bar-line" : "beat-line"} x1={timeToX(beat.time)} x2={timeToX(beat.time)} y1={PLOT_TOP} y2={PLOT_BOTTOM} />
+        {#if beat.bar !== null}
+          <text class="bar-number" x={timeToX(beat.time) + 3} y={PLOT_BOTTOM - 4}>{beat.bar}</text>
+        {/if}
+      {/each}
+
       <!-- 5秒ごとの時刻の数字 -->
       {#each ticks as t (t)}
         <text class="graph-label" x={timeToX(t) + 2} y={GRAPH_HEIGHT - 2}>{formatTime(t)}</text>
@@ -216,6 +226,26 @@
     stroke: #c8c8c8;
     stroke-width: 1;
     stroke-dasharray: 2 3;
+  }
+
+  /* 拍の線（うすい緑）。音の切れ目の点線（灰色）と見分けられるように、色を変える */
+  .beat-line {
+    stroke: var(--accent);
+    stroke-width: 1;
+    opacity: 0.25;
+  }
+
+  /* 小節の頭の線は、少し濃く太くする */
+  .bar-line {
+    stroke: var(--accent);
+    stroke-width: 1.5;
+    opacity: 0.6;
+  }
+
+  /* 小節の番号 */
+  .bar-number {
+    font-size: 10px;
+    fill: var(--accent);
   }
 
   .graph-label {

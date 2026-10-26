@@ -59,6 +59,11 @@ let settings = { tempo: 80, beats: 4, volume: 70 };
 // クリックを鳴らした（予約した）時刻の一覧（ページを開いてからの秒。マイクの時刻と同じ物差し）
 let clickTimes = [];
 
+// 鳴らし始めてからのクリックの記録（グラフに拍の線を引くため）。鳴らし始めるたびに空にする
+//   time     ：鳴らした時刻（ページを開いてからの秒。マイクの時刻と同じ物差し）
+//   downbeat ：小節の頭（1拍目）なら true（拍子が「なし」のときは、いつも false）
+let clickLog = [];
+
 // クリックが鳴るたびに呼ぶ関数（拍に合わせて丸を光らせるため）。使わないときは null
 let beatListener = null;
 
@@ -141,7 +146,11 @@ function scheduleAhead() {
 
     // 鳴らす時刻を、マイクと同じ物差し（ページを開いてからの秒）に直して覚えておく
     const secondsFromNow = nextClickTime - audioContext.currentTime;
-    clickTimes.push(performance.now() / 1000 + secondsFromNow);
+    const clickTime = performance.now() / 1000 + secondsFromNow;
+    clickTimes.push(clickTime);
+
+    // グラフに拍の線を引くための記録（こちらは古いものも捨てない）
+    clickLog.push({ time: clickTime, downbeat: isAccent });
 
     // クリックが実際に鳴るころに、何拍目かを知らせる（画面の丸を光らせるため）
     if (beatListener !== null) {
@@ -182,6 +191,7 @@ export function startMetronome(newSettings, onBeat = null) {
   nextClickTime = audioContext.currentTime + START_DELAY_SECONDS;
   beatIndex = 0;
   clickTimes = [];
+  clickLog = [];
 
   scheduleAhead();
   timerId = setInterval(scheduleAhead, CHECK_INTERVAL_MILLISECONDS);
@@ -214,6 +224,15 @@ export function stopMetronome() {
   beatTimeouts.forEach((id) => clearTimeout(id));
   beatTimeouts = [];
   beatListener = null;
+}
+
+/**
+ * 鳴らし始めてからのクリックの記録を返す関数（録音を止めたときに、グラフに拍の線を引くために使う）
+ * 止めたあとでも、次に鳴らし始めるまでは残っている。
+ * @returns {{time: number, downbeat: boolean}[]} クリックの記録（time はページを開いてからの秒、downbeat は小節の頭か）
+ */
+export function getClickLog() {
+  return clickLog.map((click) => ({ ...click }));
 }
 
 /**

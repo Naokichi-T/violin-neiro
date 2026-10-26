@@ -17,7 +17,7 @@
 
   // 一番近い音を探す関数と、グラフの計算
   import { findNearestNoteInKey } from "#lib/nearestNote.js";
-  import { analyzeSamples, makeNoteLabels, PX_PER_SECOND, GRAPH_RIGHT_PADDING } from "#lib/recordGraph.js";
+  import { analyzeSamples, makeNoteLabels, makeBeatLines, PX_PER_SECOND, GRAPH_RIGHT_PADDING } from "#lib/recordGraph.js";
 
   // ずれのグラフの部品
   import RecordGraph from "#lib/RecordGraph.svelte";
@@ -32,7 +32,7 @@
   import { keepScreenOn, allowScreenOff } from "#lib/wakeLock.js";
 
   // メトロノーム（クリックを鳴らす・クリックの音を見分ける）
-  import { prepareMetronome, startMetronome, updateMetronome, stopMetronome, isClickNoise, playTapSound } from "#lib/metronome.js";
+  import { prepareMetronome, startMetronome, updateMetronome, stopMetronome, isClickNoise, playTapSound, getClickLog } from "#lib/metronome.js";
 
   // テンポの速さの言葉の目安と、タップテンポ
   import { getTempoTerm } from "#lib/tempoTerms.js";
@@ -66,6 +66,9 @@
   let beats = $state(DEFAULT_RECORD_SETTINGS.beats);
   let clickVolume = $state(DEFAULT_RECORD_SETTINGS.clickVolume);
 
+  // グラフに拍の線を出すかどうか
+  let showBeatLines = $state(DEFAULT_RECORD_SETTINGS.showBeatLines);
+
   // 「試しに鳴らす」で、録音せずにクリックだけ鳴らしているかどうか
   let previewing = $state(false);
 
@@ -98,6 +101,9 @@
 
   // 今の録音のグラフの長さ（秒）
   let duration = $state(0);
+
+  // 今の録音で、メトロノームのクリックが鳴った位置（グラフの左端からの秒と、小節の頭か）
+  let beatMarks = $state.raw([]);
 
   // 録音した音のデータの URL と、ダウンロードするときのファイル名
   let audioUrl = $state("");
@@ -179,12 +185,21 @@
   const points = $derived(analyzeSamples(samples, key, temperamentId));
   const labels = $derived(makeNoteLabels(points));
 
+  // 今の録音の拍の線（「拍の線を出す」がオフのときは空）
+  const beatLines = $derived(showBeatLines ? makeBeatLines(beatMarks) : []);
+
   // 見比べる前の録音のデータ（一覧から消えたら、自動で見えなくなる）
   const compareRecording = $derived(history.find((item) => item.id === compareId) ?? null);
 
   // 前の録音のグラフの点と札。前の録音も、今選んでいる調・音律で計算し直す（同じ基準で比べるため）
   const comparePoints = $derived(compareRecording ? analyzeSamples(compareRecording.samples, key, temperamentId) : []);
   const compareLabels = $derived(makeNoteLabels(comparePoints));
+
+  // 前の録音の拍の線（前の版で保存した録音には、クリックの位置がないので空）
+  const compareBeatLines = $derived(showBeatLines && compareRecording ? makeBeatLines(compareRecording.beatMarks ?? []) : []);
+
+  // 拍の線を出せる録音があるかどうか（ないときは「拍の線を出す」のチェックを出さない）
+  const hasBeatMarks = $derived((status === "done" && beatMarks.length > 0) || (compareRecording !== null && (compareRecording.beatMarks ?? []).length > 0));
 
   // 今の録音のグラフを出すかどうか
   const showCurrent = $derived(status === "done");
@@ -208,6 +223,7 @@
     tempo = saved.tempo;
     beats = saved.beats;
     clickVolume = saved.clickVolume;
+    showBeatLines = saved.showBeatLines;
     loaded = true;
 
     // 保存した録音の一覧を読み込む
@@ -226,7 +242,7 @@
   // 設定が変わったら、ブラウザに保存する
   $effect(() => {
     // 中で使う値を先に読んで、どれが変わってもこの処理が呼ばれるようにする
-    const settings = { temperamentId, keyId, metronomeOn, tempo, beats, clickVolume };
+    const settings = { temperamentId, keyId, metronomeOn, tempo, beats, clickVolume, showBeatLines };
     if (loaded) {
       saveRecordSettings(settings);
     }
@@ -401,6 +417,7 @@
     errorMessage = "";
     samples = [];
     duration = 0;
+    beatMarks = [];
     elapsed = 0;
     currentFrequency = null;
     currentId = null;
@@ -526,6 +543,12 @@
     }));
     rawSamples = [];
 
+    // メトロノームのクリックが鳴った位置のうち、グラフの範囲（左端〜止めたとき）に入るものを、グラフの左端からの秒に直す
+    // （メトロノームを使わなかったときは、録音の間に鳴ったクリックがないので空になる）
+    beatMarks = getClickLog()
+      .filter((click) => click.time >= graphStart && click.time <= stopTime)
+      .map((click) => ({ time: click.time - graphStart, downbeat: click.downbeat }));
+
     // 再生とダウンロードの準備
     const now = new Date();
     audioUrl = URL.createObjectURL(recorded.blob);
@@ -544,6 +567,7 @@
         temperamentId,
         // メトロノームを使ったときだけ、テンポも保存する（一覧に「♩=80」と出す）
         tempo: metronomeOn ? tempo : null,
+        beatMarks,
         samples,
       });
       await refreshHistory();
@@ -888,12 +912,21 @@
   {/if}
 </div>
 
+<!-- ===== 拍の線を出すかどうか（メトロノームを使った録音があるときだけ出す） ===== -->
+{#if hasBeatMarks}
+  <label class="check">
+    <input type="checkbox" bind:checked={showBeatLines} />
+    拍の線を出す（メトロノームのクリックの位置）
+  </label>
+{/if}
+
 <!-- ===== 今の録音のグラフと再生（録音が終わったら出す） ===== -->
 {#if showCurrent}
   <p class="graph-title">今の録音</p>
   <RecordGraph
     {points}
     {labels}
+    {beatLines}
     {duration}
     width={graphWidth}
     cursorTime={playbackTime}
@@ -924,6 +957,7 @@
   <RecordGraph
     points={comparePoints}
     labels={compareLabels}
+    beatLines={compareBeatLines}
     duration={compareRecording.duration}
     width={graphWidth}
     onscroll={() => syncScroll("compare")}

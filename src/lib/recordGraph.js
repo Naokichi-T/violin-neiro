@@ -42,6 +42,23 @@ export function analyzeSamples(samples, key, temperamentId) {
 }
 
 /**
+ * メトロノームのクリックの記録から、グラフに引く拍の線の一覧を作る関数
+ * 小節の番号は、グラフの中で最初に来た小節の頭（1拍目）を 1 として数える。
+ * @param {{time: number, downbeat: boolean}[]} beatMarks - クリックの記録（time はグラフの左端からの秒）
+ * @returns {{time: number, downbeat: boolean, bar: number|null}[]} 拍の線（bar は小節の頭のときの小節番号、それ以外は null）
+ */
+export function makeBeatLines(beatMarks) {
+  let bar = 0;
+  return beatMarks.map((mark) => {
+    if (mark.downbeat) {
+      bar += 1;
+      return { time: mark.time, downbeat: true, bar };
+    }
+    return { time: mark.time, downbeat: false, bar: null };
+  });
+}
+
+/**
  * 同じ音が続いているところをまとめて、音名の札の一覧を作る関数
  * 同じ音が LABEL_MIN_SECONDS 秒以上続いたところだけ札にする（ほんの一瞬の音や、音と音の間の移り目は札にしない）。
  * @param {{time: number, cents: number, name: string}[]} points - analyzeSamples の結果（時刻の順）
