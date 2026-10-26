@@ -17,6 +17,12 @@ export const LABEL_MIN_SECONDS = 0.15;
 // 前の点からこれ以上あいたら、別の音（または音が途切れた）とみなす秒数
 export const GAP_SECONDS = 0.1;
 
+// グラフの横の、1秒あたりの幅（px）。今の録音と前の録音で同じにして、同じ秒数が縦にそろうようにする
+export const PX_PER_SECOND = 60;
+
+// グラフの右端の余白（px）。最後の音名の札がはみ出さないように
+export const GRAPH_RIGHT_PADDING = 40;
+
 /**
  * 測った音を、一番近い音とそのずれに直す関数
  * @param {{time: number, frequency: number}[]} samples - 測った音（time はグラフの左端からの秒）

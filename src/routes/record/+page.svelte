@@ -2,6 +2,7 @@
   // ===== 録音して聴き返すページ =====
   // 弾いた音を録音しながら音程も測り、止めたら「一番近い音からのずれ」のグラフを出す。
   // 再生すると、グラフの上を縦線が動く。グラフを押すと、その場所から再生する。
+  // 止めた録音の音程のデータはブラウザに保存し（★なしは5つまで）、前の録音のグラフと並べて見比べられる。
 
   import { onMount } from "svelte";
 
@@ -16,7 +17,13 @@
 
   // 一番近い音を探す関数と、グラフの計算
   import { findNearestNoteInKey } from "#lib/nearestNote.js";
-  import { analyzeSamples, makeNoteLabels, GAP_SECONDS } from "#lib/recordGraph.js";
+  import { analyzeSamples, makeNoteLabels, PX_PER_SECOND, GRAPH_RIGHT_PADDING } from "#lib/recordGraph.js";
+
+  // ずれのグラフの部品
+  import RecordGraph from "#lib/RecordGraph.svelte";
+
+  // 前の録音の保存・読み込み
+  import { listRecordings, saveRecording, updateRecording, deleteRecording, MAX_UNSTARRED } from "#lib/recordHistory.js";
 
   // 音のデータを「ラ4」のような文字にする関数
   import { noteToText } from "#lib/score.js";
@@ -35,25 +42,8 @@
   // 弾き始めの何秒前からをグラフと再生の始まりにするか（出だしが切れないように）
   const LEAD_SECONDS = 0.3;
 
-  // これ以内のずれなら「合っている」とみなす（うすい緑の帯）幅（セント）
+  // これ以内のずれなら「合っている」とみなす（緑で表示する）幅（セント）
   const OK_CENTS = 5;
-
-  // グラフの縦の目盛りの上限・下限（セント）。はみ出したら端に貼り付ける
-  const GRAPH_CENTS = 50;
-
-  // グラフの横の、1秒あたりの幅（px）
-  const PX_PER_SECOND = 60;
-
-  // グラフの高さと、線を描く範囲（SVG の座標）
-  const GRAPH_HEIGHT = 200;
-  const PLOT_TOP = 28;
-  const PLOT_BOTTOM = 184;
-
-  // 縦の目盛りの数字を出す、左の欄の幅（px）
-  const AXIS_WIDTH = 40;
-
-  // グラフの右端の余白（px）。最後の音名の札がはみ出さないように
-  const GRAPH_RIGHT_PADDING = 40;
 
   // ===== 画面の状態 =====
 
@@ -80,11 +70,11 @@
   // 今聞こえている音の周波数（聞こえていないときは null）
   let currentFrequency = $state(null);
 
-  // 録音した音の、グラフの左端からの時刻と周波数（止めたあとに入れる）
+  // 今の録音の、グラフの左端からの時刻と周波数（止めたあとに入れる）
   // 数が多い（5分で約18000個）ので、中身を細かく見張らない $state.raw にする
   let samples = $state.raw([]);
 
-  // グラフの長さ（秒）
+  // 今の録音のグラフの長さ（秒）
   let duration = $state(0);
 
   // 録音した音のデータの URL と、ダウンロードするときのファイル名
@@ -100,9 +90,20 @@
   // マイクが使えなかったときなどのメッセージ
   let errorMessage = $state("");
 
-  // グラフを入れている横スクロールの枠と、その幅（px）
-  let scroller = $state(null);
-  let scrollerWidth = $state(0);
+  // 保存した録音の一覧（新しい順）
+  let history = $state.raw([]);
+
+  // 今の録音の、保存したときの id（一覧で「今の録音」と表示するため）
+  let currentId = $state(null);
+
+  // 見比べるために選んだ、前の録音の id（選んでいないときは null）
+  let compareId = $state(null);
+
+  // グラフの横スクロールの枠と、その幅（上が今の録音、下が前の録音）
+  let currentScroller = $state(null);
+  let currentScrollerWidth = $state(0);
+  let compareScroller = $state(null);
+  let compareScrollerWidth = $state(0);
 
   // ===== 画面に出さない値 =====
 
@@ -137,25 +138,26 @@
   const currentNearest = $derived(currentFrequency !== null ? findNearestNoteInKey(currentFrequency, key, temperamentId) : null);
   const currentCents = $derived(currentNearest !== null ? 1200 * Math.log2(currentFrequency / currentNearest.frequency) : null);
 
-  // グラフに描く点（一番近い音からのずれ）。音律や調を変えると、計算し直される
+  // 今の録音のグラフの点と札。音律や調を変えると、計算し直される
   const points = $derived(analyzeSamples(samples, key, temperamentId));
-
-  // 音名の札
   const labels = $derived(makeNoteLabels(points));
 
-  // グラフの線
-  const graphPath = $derived(makeGraphPath(points));
+  // 見比べる前の録音のデータ（一覧から消えたら、自動で見えなくなる）
+  const compareRecording = $derived(history.find((item) => item.id === compareId) ?? null);
 
-  // グラフの横幅（px）：録音の長さぶん。短いときは枠の幅いっぱいにする
-  const graphWidth = $derived(Math.max(scrollerWidth, Math.ceil(duration * PX_PER_SECOND) + GRAPH_RIGHT_PADDING));
+  // 前の録音のグラフの点と札。前の録音も、今選んでいる調・音律で計算し直す（同じ基準で比べるため）
+  const comparePoints = $derived(compareRecording ? analyzeSamples(compareRecording.samples, key, temperamentId) : []);
+  const compareLabels = $derived(makeNoteLabels(comparePoints));
 
-  // 横の目盛り（秒）の一覧。長い録音でも混みすぎないように、5秒ごとに数字を出す
-  const ticks = $derived.by(() => {
-    const list = [];
-    for (let t = 0; t <= duration; t += 5) {
-      list.push(t);
-    }
-    return list;
+  // 今の録音のグラフを出すかどうか
+  const showCurrent = $derived(status === "done");
+
+  // グラフの横幅（px）：上下で同じ幅にして、同じ秒数が縦にそろうようにする
+  // 長いほうの録音に合わせ、短いときは枠の幅いっぱいにする
+  const graphWidth = $derived.by(() => {
+    const longest = Math.max(showCurrent ? duration : 0, compareRecording ? compareRecording.duration : 0);
+    const frameWidth = Math.max(currentScrollerWidth, compareScrollerWidth);
+    return Math.max(frameWidth, Math.ceil(longest * PX_PER_SECOND) + GRAPH_RIGHT_PADDING);
   });
 
   // ===== 起動と後片付け =====
@@ -166,6 +168,9 @@
     temperamentId = saved.temperamentId;
     keyId = saved.keyId;
     loaded = true;
+
+    // 保存した録音の一覧を読み込む
+    refreshHistory();
 
     // ページを離れるときは、録音・マイク・再生を全部止めて片付ける
     return () => {
@@ -185,67 +190,86 @@
     }
   });
 
-  // ===== グラフの計算 =====
+  // ===== 前の録音の一覧 =====
 
   /**
-   * 秒を、グラフの横の位置（SVG の x 座標）に直す関数
-   * @param {number} time - グラフの左端からの秒
-   * @returns {number} x 座標
+   * 保存した録音の一覧を読み込み直す関数
+   * 保存できないブラウザのときは、一覧を空にする。
    */
-  function timeToX(time) {
-    return time * PX_PER_SECOND;
-  }
-
-  /**
-   * ずれ（セント）を、グラフの縦の位置（SVG の y 座標）に直す関数
-   * 上がプラス（高い）、下がマイナス（低い）。はみ出す値は上下の端に貼り付ける。
-   * @param {number} cents - ずれ（セント）
-   * @returns {number} y 座標
-   */
-  function centsToY(cents) {
-    const clamped = Math.min(Math.max(cents, -GRAPH_CENTS), GRAPH_CENTS);
-    const middle = (PLOT_TOP + PLOT_BOTTOM) / 2;
-    return middle - (clamped / GRAPH_CENTS) * ((PLOT_BOTTOM - PLOT_TOP) / 2);
-  }
-
-  /**
-   * グラフの点から、線（SVG の path）を作る関数
-   * 音が途切れたところと、別の音に変わったところでは、線をいったん切る。
-   * @param {{time: number, cents: number, name: string}[]} list - グラフの点
-   * @returns {string} path の d 属性の文字（点がないときは空文字）
-   */
-  function makeGraphPath(list) {
-    let path = "";
-    let previous = null;
-
-    for (const point of list) {
-      const x = timeToX(point.time).toFixed(1);
-      const y = centsToY(point.cents).toFixed(1);
-
-      // 最初の点・時間があいたとき・別の音に変わったときは「ここから描き始める」（M）
-      // それ以外は「前の点から線を引く」（L）
-      const startNew = previous === null || point.time - previous.time > GAP_SECONDS || point.name !== previous.name;
-      path += (startNew ? "M" : "L") + x + "," + y + " ";
-      previous = point;
+  async function refreshHistory() {
+    try {
+      history = await listRecordings();
+    } catch (error) {
+      history = [];
     }
+  }
 
-    return path;
+  /**
+   * ★を付ける・外す関数
+   * @param {{id: number, starred: boolean}} item - 録音
+   */
+  async function toggleStar(item) {
+    await updateRecording(item.id, { starred: !item.starred });
+    await refreshHistory();
+  }
+
+  /**
+   * メモを保存する関数（入力欄から離れたときに呼ぶ）
+   * @param {{id: number}} item - 録音
+   * @param {string} memo - 入力したメモ
+   */
+  async function saveMemo(item, memo) {
+    await updateRecording(item.id, { memo: memo.trim() });
+    await refreshHistory();
+  }
+
+  /**
+   * 録音を消す関数（確認を出してから消す）
+   * @param {{id: number, createdAt: number}} item - 録音
+   */
+  async function removeRecording(item) {
+    if (!confirm(formatDate(item.createdAt) + " の録音を消しますか？")) {
+      return;
+    }
+    await deleteRecording(item.id);
+    if (compareId === item.id) {
+      compareId = null;
+    }
+    if (currentId === item.id) {
+      currentId = null;
+    }
+    await refreshHistory();
+  }
+
+  /**
+   * 上下のグラフの横スクロールをそろえる関数
+   * どちらかをスクロールしたら、もう片方も同じ位置にする。
+   * @param {'current'|'compare'} source - スクロールしたほう
+   */
+  function syncScroll(source) {
+    const from = source === "current" ? currentScroller : compareScroller;
+    const to = source === "current" ? compareScroller : currentScroller;
+    if (from !== null && to !== null && to.scrollLeft !== from.scrollLeft) {
+      to.scrollLeft = from.scrollLeft;
+    }
   }
 
   // ===== 録音の処理 =====
 
   /**
    * 「録音」を押したときの関数
-   * 前の録音を捨てて、マイクと録音を始め、弾き始めるのを待つ。
+   * 今の録音を手放して、マイクと録音を始め、弾き始めるのを待つ。
+   * （止めた録音は保存してあるので、一覧から見比べられる）
    */
   async function start() {
-    // 前の録音と結果を捨てる
+    // 前の録音と結果を手放す
     releaseAudio();
     errorMessage = "";
     samples = [];
     duration = 0;
     elapsed = 0;
     currentFrequency = null;
+    currentId = null;
     rawSamples = [];
     recordStartTime = null;
     soundStartTime = null;
@@ -320,7 +344,7 @@
 
   /**
    * 録音を止める関数（「止める」を押したとき・5分になったとき）
-   * 録音のデータを受け取り、グラフを作る。
+   * 録音のデータを受け取り、グラフを作って、音程のデータを保存する。
    */
   async function finish() {
     // 弾き始める前に止めたときは、録音を捨てて最初の状態に戻る
@@ -363,12 +387,27 @@
     rawSamples = [];
 
     // 再生とダウンロードの準備
+    const now = new Date();
     audioUrl = URL.createObjectURL(recorded.blob);
-    fileName = makeFileName(new Date(), recorded.extension);
+    fileName = makeFileName(now, recorded.extension);
     prepareAudio();
     playbackTime = 0;
 
     status = "done";
+
+    // 音程のデータをブラウザに保存し、一覧を読み込み直す（保存できなくても、今の録音は見られる）
+    try {
+      currentId = await saveRecording({
+        createdAt: now.getTime(),
+        duration,
+        keyId,
+        temperamentId,
+        samples,
+      });
+      await refreshHistory();
+    } catch (error) {
+      errorMessage = "この録音を一覧に保存できませんでした（グラフと再生はできます）。";
+    }
   }
 
   /**
@@ -494,28 +533,18 @@
   /**
    * 縦線が枠の外に出そうになったら、グラフを横にスクロールして追いかける関数
    * 縦線が枠の右から2割のところまで来たら、縦線が左から3割の位置に来るようにずらす。
+   * （下の前の録音のグラフも、スクロールの連動で一緒に動く）
    */
   function followCursor() {
-    if (scroller === null) {
+    if (currentScroller === null) {
       return;
     }
-    const x = timeToX(playbackTime);
-    const left = scroller.scrollLeft;
-    const width = scroller.clientWidth;
+    const x = playbackTime * PX_PER_SECOND;
+    const left = currentScroller.scrollLeft;
+    const width = currentScroller.clientWidth;
     if (x < left || x > left + width * 0.8) {
-      scroller.scrollLeft = Math.max(x - width * 0.3, 0);
+      currentScroller.scrollLeft = Math.max(x - width * 0.3, 0);
     }
-  }
-
-  /**
-   * グラフを押したときの関数：押した場所から再生する
-   * @param {MouseEvent} event - 押したときの情報
-   */
-  function handleGraphClick(event) {
-    // 押した場所が、グラフの左端から何 px か
-    const rect = /** @type {SVGElement} */ (event.currentTarget).getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    playFrom(x / PX_PER_SECOND);
   }
 
   // ===== 表示用の関数 =====
@@ -527,9 +556,17 @@
    */
   function formatTime(seconds) {
     const total = Math.floor(seconds);
-    const minutes = Math.floor(total / 60);
-    const rest = total % 60;
-    return minutes + ":" + String(rest).padStart(2, "0");
+    return Math.floor(total / 60) + ":" + String(total % 60).padStart(2, "0");
+  }
+
+  /**
+   * 日時（ミリ秒）を「月/日 時:分」の文字にする関数
+   * @param {number} time - 日時（ミリ秒）
+   * @returns {string} 例：'10/26 9:15'
+   */
+  function formatDate(time) {
+    const date = new Date(time);
+    return date.getMonth() + 1 + "/" + date.getDate() + " " + date.getHours() + ":" + String(date.getMinutes()).padStart(2, "0");
   }
 
   /**
@@ -638,50 +675,20 @@
   {/if}
 </div>
 
-<!-- ===== グラフと再生（録音が終わったら出す） ===== -->
-{#if status === "done"}
-  <div class="graph-area">
-    <!-- 縦の目盛りの数字（横にスクロールしても動かない） -->
-    <svg class="axis" width={AXIS_WIDTH} height={GRAPH_HEIGHT} aria-hidden="true">
-      {#each [50, 25, 0, -25, -50] as value (value)}
-        <text class="graph-label" x={AXIS_WIDTH - 6} y={centsToY(value) + 4} text-anchor="end">
-          {value > 0 ? "+" + value : value === 0 ? "0" : "−" + Math.abs(value)}
-        </text>
-      {/each}
-    </svg>
-
-    <!-- グラフ本体（長い録音は横にスクロールする） -->
-    <div class="scroller" bind:this={scroller} bind:clientWidth={scrollerWidth}>
-      <!-- グラフを押すとその場所から再生する。キーボードでは「再生」ボタンで操作できるので、グラフ自体はクリックだけにする -->
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-      <svg class="graph" width={graphWidth} height={GRAPH_HEIGHT} role="img" aria-label="時間ごとの、一番近い音からの音程のずれのグラフ" onclick={handleGraphClick}>
-        <!-- 「合っている」範囲（±5セント）を、うすい緑で塗る -->
-        <rect class="graph-ok" x="0" y={centsToY(OK_CENTS)} width={graphWidth} height={centsToY(-OK_CENTS) - centsToY(OK_CENTS)} />
-
-        <!-- 横の線（+50・+25・0・−25・−50） -->
-        {#each [50, 25, 0, -25, -50] as value (value)}
-          <line class={value === 0 ? "graph-zero" : "graph-grid"} x1="0" x2={graphWidth} y1={centsToY(value)} y2={centsToY(value)} />
-        {/each}
-
-        <!-- 5秒ごとの時刻の数字 -->
-        {#each ticks as t (t)}
-          <text class="graph-label" x={timeToX(t) + 2} y={GRAPH_HEIGHT - 2}>{formatTime(t)}</text>
-        {/each}
-
-        <!-- 音名の札と、音の切れ目の点線 -->
-        {#each labels as label, index (index)}
-          <line class="graph-divider" x1={timeToX(label.start)} x2={timeToX(label.start)} y1={PLOT_TOP - 4} y2={PLOT_BOTTOM} />
-          <text class="note-label" x={timeToX(label.start) + 3} y={PLOT_TOP - 10}>{label.name}</text>
-        {/each}
-
-        <!-- 音程の線 -->
-        <path class="graph-line" d={graphPath} />
-
-        <!-- 再生している位置の縦線 -->
-        <line class="graph-cursor" x1={timeToX(playbackTime)} x2={timeToX(playbackTime)} y1={PLOT_TOP - 20} y2={PLOT_BOTTOM} />
-      </svg>
-    </div>
-  </div>
+<!-- ===== 今の録音のグラフと再生（録音が終わったら出す） ===== -->
+{#if showCurrent}
+  <p class="graph-title">今の録音</p>
+  <RecordGraph
+    {points}
+    {labels}
+    {duration}
+    width={graphWidth}
+    cursorTime={playbackTime}
+    onseek={playFrom}
+    onscroll={() => syncScroll("current")}
+    bind:scroller={currentScroller}
+    bind:scrollerWidth={currentScrollerWidth}
+  />
 
   <!-- 再生とダウンロード -->
   <div class="playback">
@@ -690,6 +697,26 @@
     </button>
     <a class="sub-button" href={audioUrl} download={fileName}>ダウンロード</a>
   </div>
+{/if}
+
+<!-- ===== 見比べる前の録音のグラフ ===== -->
+{#if compareRecording}
+  <div class="graph-title-row">
+    <p class="graph-title">
+      前の録音：{formatDate(compareRecording.createdAt)}
+      {#if compareRecording.memo}「{compareRecording.memo}」{/if}
+    </p>
+    <button type="button" class="close-button" onclick={() => (compareId = null)}>閉じる</button>
+  </div>
+  <RecordGraph
+    points={comparePoints}
+    labels={compareLabels}
+    duration={compareRecording.duration}
+    width={graphWidth}
+    onscroll={() => syncScroll("compare")}
+    bind:scroller={compareScroller}
+    bind:scrollerWidth={compareScrollerWidth}
+  />
 {/if}
 
 <!-- マイクが使えなかったときなどのメッセージ -->
@@ -701,6 +728,42 @@
 <button type="button" class="play" class:running disabled={status === "stopping"} onclick={handleToggle}>
   {running ? "■ 止める" : status === "done" ? "● もう一度録音" : "● 録音"}
 </button>
+
+<!-- ===== 前の録音の一覧 ===== -->
+{#if history.length > 0}
+  <section class="history">
+    <h2 class="history-title">前の録音</h2>
+    <p class="history-note">
+      音程のグラフだけを保存しています（音は保存しないので聴き返せません）。★のない録音は新しい{MAX_UNSTARRED}つまで残り、★を付けた録音は消えません。
+    </p>
+    <ul class="history-list">
+      {#each history as item (item.id)}
+        <li class="history-item">
+          <div class="history-main">
+            <!-- ★を付ける・外すボタン -->
+            <button type="button" class="star" class:starred={item.starred} aria-pressed={item.starred} aria-label={item.starred ? "★を外す" : "★を付ける"} onclick={() => toggleStar(item)}>
+              {item.starred ? "★" : "☆"}
+            </button>
+            <span class="history-date">{formatDate(item.createdAt)}</span>
+            <span class="history-duration">{formatTime(item.duration)}</span>
+            <!-- 見比べるボタン（今の録音と、もう表示している録音には出さない） -->
+            {#if item.id === currentId}
+              <span class="history-tag">今の録音</span>
+            {:else if item.id === compareId}
+              <span class="history-tag">表示中</span>
+            {:else}
+              <button type="button" class="small-button" onclick={() => (compareId = item.id)}> 比べる </button>
+            {/if}
+            <button type="button" class="small-button danger" aria-label="この録音を消す" onclick={() => removeRecording(item)}> 削除 </button>
+          </div>
+          <!-- メモ（入力欄から離れたときに保存する） -->
+          <input class="memo" type="text" placeholder="メモ（曲名など）" value={item.memo} onchange={(event) => saveMemo(item, event.currentTarget.value)} />
+        </li>
+      {/each}
+    </ul>
+    <p class="history-note">iPhone・iPad では、このサイトをしばらく（7日ほど）開かないと、保存した録音が消えることがあります。大事な録音はダウンロードしておくと安心です。</p>
+  </section>
+{/if}
 
 <style>
   /* ----- ホームへ戻るリンク ----- */
@@ -851,75 +914,29 @@
     color: var(--disabled);
   }
 
-  /* ----- グラフ ----- */
-  .graph-area {
+  /* ----- グラフの見出し ----- */
+  .graph-title {
+    margin: 0 0 4px;
+    font-size: 0.9rem;
+    color: var(--text-sub);
+  }
+
+  .graph-title-row {
     display: flex;
-    margin-bottom: 12px;
-    background: var(--card-bg);
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .close-button {
+    padding: 2px 10px;
+    font-size: 0.85rem;
     border: 1px solid var(--border);
-    border-radius: 10px;
-    overflow: hidden;
-  }
-
-  /* 縦の目盛りの欄は、縮まないようにする */
-  .axis {
-    flex: 0 0 auto;
-    display: block;
-  }
-
-  /* グラフ本体は、残りの幅で横にスクロールする */
-  .scroller {
-    flex: 1;
-    min-width: 0;
-    overflow-x: auto;
-  }
-
-  .graph {
-    display: block;
+    border-radius: 8px;
+    background: var(--card-bg);
+    color: var(--text-sub);
     cursor: pointer;
-  }
-
-  .graph-ok {
-    fill: var(--accent-light);
-  }
-
-  .graph-grid {
-    stroke: #e4e4e4;
-    stroke-width: 1;
-  }
-
-  .graph-zero {
-    stroke: var(--accent);
-    stroke-width: 1;
-  }
-
-  .graph-divider {
-    stroke: #c8c8c8;
-    stroke-width: 1;
-    stroke-dasharray: 2 3;
-  }
-
-  .graph-label {
-    font-size: 10px;
-    fill: var(--text-sub);
-  }
-
-  .note-label {
-    font-size: 11px;
-    fill: var(--text);
-  }
-
-  .graph-line {
-    fill: none;
-    stroke: #333333;
-    stroke-width: 1.5;
-    stroke-linejoin: round;
-    stroke-linecap: round;
-  }
-
-  .graph-cursor {
-    stroke: #e07a2f;
-    stroke-width: 2;
+    margin-bottom: 4px;
   }
 
   /* ----- 再生とダウンロード ----- */
@@ -973,5 +990,98 @@
   .play:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+
+  /* ----- 前の録音の一覧 ----- */
+  .history {
+    margin-top: 28px;
+  }
+
+  .history-title {
+    margin: 0 0 4px;
+    font-size: 1.1rem;
+  }
+
+  .history-note {
+    margin: 0 0 8px;
+    font-size: 0.8rem;
+    color: var(--text-sub);
+  }
+
+  .history-list {
+    list-style: none;
+    margin: 0 0 8px;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .history-item {
+    padding: 8px 12px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  .history-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .star {
+    padding: 0 4px;
+    font-size: 1.2rem;
+    border: none;
+    background: none;
+    color: var(--disabled);
+    cursor: pointer;
+  }
+
+  .star.starred {
+    color: #e0a12f;
+  }
+
+  .history-date {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .history-duration {
+    color: var(--text-sub);
+    font-variant-numeric: tabular-nums;
+    /* 右側のボタンを右端に寄せる */
+    margin-right: auto;
+  }
+
+  .history-tag {
+    font-size: 0.8rem;
+    color: var(--accent);
+  }
+
+  .small-button {
+    padding: 4px 10px;
+    font-size: 0.85rem;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--card-bg);
+    color: var(--accent);
+    cursor: pointer;
+  }
+
+  .small-button.danger {
+    border-color: var(--border);
+    color: var(--text-sub);
+  }
+
+  .memo {
+    width: 100%;
+    margin-top: 6px;
+    padding: 6px 8px;
+    /* 16px 以上にすると、iPhone で入力欄を押したときに画面が勝手に拡大されない */
+    font-size: 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-sizing: border-box;
   }
 </style>
