@@ -1,17 +1,44 @@
 <script>
-  // ===== ロングトーンのページ =====
-  // 1つの音を長くのばし、その間の音程のずれとぶれを測って、グラフと点数で見せる
+  // ===== ロングトーン・ビブラートのページ =====
+  // 1つの音を長くのばし、その間の音程を測って、グラフと点数で見せる。
+  //   ロングトーン：ずれとぶれ（まっすぐのばせているか）
+  //   ビブラート　：揺れの速さ・幅・そろい具合・目標とのずれ
+  // 計測の流れ（音が出たら始まり、途切れたら終わる）とグラフは、どちらも同じ。
+  // 計測したあとに練習の種類や合わせる位置を変えても、同じ計測から計算し直す。
 
   import { onMount } from "svelte";
 
   // 音のデータを「ラ4」のような文字にする関数
   import { noteToText } from "#lib/score.js";
 
+  // 調の一覧と、調に関する関数（「自由」のときの音の呼び方に使う）
+  import { KEYS, getKey, getKeyMenuLabel } from "#lib/key.js";
+
   // マイクのオン・オフ
   import { startMicrophone, stopMicrophone } from "#lib/microphone.js";
 
+  // 調に合わせて一番近い音を探す関数（録音のページと同じ）
+  import { findNearestNoteInKey } from "#lib/nearestNote.js";
+
   // ロングトーンの計算
-  import { OPEN_STRING_TARGETS, FREE_TARGET_ID, SKIP_SECONDS, SILENCE_SECONDS, MAX_SECONDS, getTargetFrequency, findNearestNote, getCents, getMedian, summarizeLongTone } from "#lib/longtone.js";
+  import {
+    OPEN_STRING_TARGETS,
+    FREE_TARGET_ID,
+    LONGTONE_TEMPERAMENT_ID,
+    SKIP_SECONDS,
+    SILENCE_SECONDS,
+    MAX_SECONDS,
+    getTargetFrequency,
+    getCents,
+    getMedian,
+    summarizeLongTone,
+  } from "#lib/longtone.js";
+
+  // ビブラートの計算
+  import { VIBRATO_REFERENCES, summarizeVibrato } from "#lib/vibrato.js";
+
+  // 設定の保存と読み込み
+  import { PRACTICE_MODES, DEFAULT_LONGTONE_SETTINGS, loadLongtoneSettings, saveLongtoneSettings } from "#lib/longtoneSettings.js";
 
   // ===== 設定値 =====
 
@@ -37,8 +64,20 @@
 
   // ===== 画面の状態 =====
 
+  // 練習の種類（'longtone' か 'vibrato'）
+  let mode = $state(DEFAULT_LONGTONE_SETTINGS.mode);
+
   // 選んでいる目標の id（'G3'・'D4'・'A4'・'E5'・'free'）
-  let targetId = $state("A4");
+  let targetId = $state(DEFAULT_LONGTONE_SETTINGS.targetId);
+
+  // 「自由」のときの、音の呼び方に使う調の id
+  let keyId = $state(DEFAULT_LONGTONE_SETTINGS.keyId);
+
+  // ビブラートで目標に合わせる位置（'top'＝上の端、'middle'＝真ん中）
+  let reference = $state(DEFAULT_LONGTONE_SETTINGS.reference);
+
+  // 保存しておいた設定を読み込み終わったかどうか（最初の値で保存を上書きしないため）
+  let loaded = $state(false);
 
   // 今の段階
   //   'idle'      ：まだ始めていない
@@ -59,8 +98,8 @@
   // 計測を始めてからの秒数
   let elapsed = $state(0);
 
-  // 結果（計測が終わったら入る）
-  let result = $state(null);
+  // 音を出していた長さ（秒）。計測が終わったら入る
+  let measuredDuration = $state(0);
 
   // マイクが使えなかったときなどのメッセージ
   let errorMessage = $state("");
@@ -78,6 +117,9 @@
 
   // ===== 計算する値 =====
 
+  // 「自由」のときの調
+  const key = $derived(getKey(keyId));
+
   // 今回の目標の周波数（まだ決まっていないときは null）
   const targetFrequency = $derived(targetNote ? getTargetFrequency(targetNote) : null);
 
@@ -87,8 +129,14 @@
   // 計測中かどうか（「始める」を押してから終わるまで）
   const running = $derived(status === "waiting" || status === "measuring");
 
+  // ロングトーンの結果（計測が終わって、目標が決まっているときだけ）
+  const longtoneResult = $derived(status === "done" && targetFrequency !== null ? summarizeLongTone(samples, targetFrequency, measuredDuration) : null);
+
+  // ビブラートの結果（ビブラートを選んでいて、計測が終わって、目標が決まっているときだけ）
+  const vibratoResult = $derived(mode === "vibrato" && status === "done" && targetFrequency !== null ? summarizeVibrato(samples, targetFrequency, measuredDuration, reference) : null);
+
   // グラフの横幅（秒）：計測中はのびていき、終わったら音の長さぴったりにする
-  const graphSeconds = $derived(status === "done" && result ? Math.max(result.duration, 1) : Math.max(elapsed, GRAPH_MIN_SECONDS));
+  const graphSeconds = $derived(status === "done" ? Math.max(measuredDuration, 1) : Math.max(elapsed, GRAPH_MIN_SECONDS));
 
   // グラフの横の目盛りの間隔（秒）：横幅に合わせて、目盛りが混みすぎないようにする
   const tickStep = $derived(graphSeconds <= 10 ? 2 : graphSeconds <= 30 ? 5 : 10);
@@ -108,10 +156,27 @@
   // ===== 起動と後片付け =====
 
   onMount(() => {
+    // 保存しておいた設定を読み込んで、画面に反映する
+    const saved = loadLongtoneSettings();
+    mode = saved.mode;
+    targetId = saved.targetId;
+    keyId = saved.keyId;
+    reference = saved.reference;
+    loaded = true;
+
     // ページを離れるときは、マイクを切る
     return () => {
       stopMicrophone();
     };
+  });
+
+  // 設定が変わったら、ブラウザに保存する
+  $effect(() => {
+    // 中で使う値を先に読んで、どれが変わってもこの処理が呼ばれるようにする
+    const settings = { mode, targetId, keyId, reference };
+    if (loaded) {
+      saveLongtoneSettings(settings);
+    }
   });
 
   // ===== グラフの計算 =====
@@ -175,6 +240,15 @@
   // ===== 計測の処理 =====
 
   /**
+   * 「自由」のときに、集めた出だしの音から目標の音を決める関数
+   * 測り間違いに引っぱられないように中央値を使い、調に合わせて呼び分ける（シ♭とラ♯など）。
+   * @returns {{step: number, accidental: number, octave: number}} 目標の音のデータ
+   */
+  function decideFreeTarget() {
+    return findNearestNoteInKey(getMedian(freeCandidates), key, LONGTONE_TEMPERAMENT_ID).note;
+  }
+
+  /**
    * 「始める」を押したときの関数
    * 前回の結果を消して、マイクをオンにし、音が出るのを待つ。
    */
@@ -182,7 +256,7 @@
     // 前回の結果を消す
     errorMessage = "";
     samples = [];
-    result = null;
+    measuredDuration = 0;
     freeCandidates = [];
     currentFrequency = null;
     elapsed = 0;
@@ -241,7 +315,7 @@
       if (targetNote === null) {
         freeCandidates.push(frequency);
         if (time >= SKIP_SECONDS) {
-          targetNote = findNearestNote(getMedian(freeCandidates));
+          targetNote = decideFreeTarget();
         }
       }
     } else {
@@ -257,7 +331,7 @@
 
   /**
    * 計測を終える関数（音が途切れたとき・「止める」を押したとき・最長の時間になったとき）
-   * マイクを切って、結果を計算する。
+   * マイクを切って、結果を出せるようにする（結果そのものは、上の「計算する値」で計算される）。
    */
   function finish() {
     stopMicrophone();
@@ -270,15 +344,12 @@
     }
 
     // 音を出していた長さ：始めてから、最後に音が聞こえたときまで
-    const duration = lastHeardTime - startTime;
+    measuredDuration = lastHeardTime - startTime;
 
     // 「自由」で、目標が決まる前に終わったときは、集めた音から目標を決める
     if (targetNote === null && freeCandidates.length > 0) {
-      targetNote = findNearestNote(getMedian(freeCandidates));
+      targetNote = decideFreeTarget();
     }
-
-    // 結果を計算する（$state.snapshot で、状態の入れ物からふつうの配列に取り出して渡す）
-    result = targetNote !== null ? summarizeLongTone($state.snapshot(samples), getTargetFrequency(targetNote), duration) : null;
 
     status = "done";
   }
@@ -328,17 +399,38 @@
       return "low";
     }
   }
+
+  /**
+   * ばらつき（0.08 など）を、「±8%」のような文字にする関数
+   * @param {number} value - ばらつき（0.08 なら 8%）
+   * @returns {string} 例：'±8%'
+   */
+  function formatVariation(value) {
+    return "±" + Math.round(value * 100) + "%";
+  }
 </script>
 
 <svelte:head>
-  <title>ロングトーン｜バイオリン音色練習</title>
-  <meta name="description" content="1つの音を長くのばして、音程のずれとぶれをグラフと点数で確かめるバイオリンの練習ページ" />
+  <title>ロングトーン・ビブラート｜バイオリン音色練習</title>
+  <meta name="description" content="1つの音を長くのばして、音程のずれとぶれ、ビブラートの速さ・幅・そろい具合をグラフと点数で確かめるバイオリンの練習ページ" />
 </svelte:head>
 
 <!-- ===== ホームへ戻るリンクと見出し ===== -->
 <a class="back" href="/">← ホーム</a>
-<h1 class="title">ロングトーン</h1>
+<h1 class="title">ロングトーン・ビブラート</h1>
 <p class="lead">「始める」を押してから弾き始めると、音が出た瞬間から測ります。音が途切れると終わります。</p>
+
+<!-- ===== 練習の種類を選ぶ ===== -->
+<section class="row">
+  <span class="label">練習</span>
+  <div class="toggle-group" role="group" aria-label="練習の種類">
+    {#each PRACTICE_MODES as practice (practice.id)}
+      <button type="button" class="toggle" aria-pressed={mode === practice.id} disabled={running} onclick={() => (mode = practice.id)}>
+        {practice.name}
+      </button>
+    {/each}
+  </div>
+</section>
 
 <!-- ===== 目標の音を選ぶ ===== -->
 <section class="row">
@@ -352,6 +444,34 @@
     <button type="button" class="toggle" aria-pressed={targetId === FREE_TARGET_ID} disabled={running} onclick={() => (targetId = FREE_TARGET_ID)}> 自由 </button>
   </div>
 </section>
+
+<!-- ===== 「自由」のときだけ：調を選ぶ（シ♭とラ♯のように、調によって音の呼び方と高さが変わるため） ===== -->
+{#if targetId === FREE_TARGET_ID}
+  <section class="row">
+    <label class="label" for="key-select">調</label>
+    <div class="field">
+      <select id="key-select" class="select" bind:value={keyId} disabled={running}>
+        {#each KEYS as k (k.id)}
+          <option value={k.id}>{getKeyMenuLabel(k)}</option>
+        {/each}
+      </select>
+    </div>
+  </section>
+{/if}
+
+<!-- ===== ビブラートのときだけ：目標に合わせる位置を選ぶ ===== -->
+{#if mode === "vibrato"}
+  <section class="row">
+    <span class="label">合わせる</span>
+    <div class="toggle-group" role="group" aria-label="目標に合わせる位置">
+      {#each VIBRATO_REFERENCES as item (item.id)}
+        <button type="button" class="toggle" aria-pressed={reference === item.id} onclick={() => (reference = item.id)}>
+          {item.name}
+        </button>
+      {/each}
+    </div>
+  </section>
+{/if}
 
 <!-- ===== 今の様子（目標の音・今のずれ・経過時間） ===== -->
 <div class="now">
@@ -405,29 +525,93 @@
   {/each}
   <text class="graph-label" x={PLOT_RIGHT} y={GRAPH_HEIGHT - 2} text-anchor="end">秒</text>
 
+  <!-- ビブラートのとき：揺れの上の端（または真ん中）の平均の高さに、オレンジの点線を引く -->
+  {#if vibratoResult && vibratoResult.found}
+    <line class="graph-reference" x1={PLOT_LEFT} x2={PLOT_RIGHT} y1={centsToY(vibratoResult.offset)} y2={centsToY(vibratoResult.offset)} />
+  {/if}
+
   <!-- 音程の線 -->
   <path class="graph-line" d={graphPath} />
+
+  <!-- ビブラートのとき：見つけた山（赤）と谷（青）に印を付ける -->
+  {#if vibratoResult}
+    {#each vibratoResult.extremes as extreme, index (index)}
+      <circle class={extreme.type === "peak" ? "mark-peak" : "mark-trough"} cx={timeToX(extreme.time, graphSeconds)} cy={centsToY(extreme.cents)} r="2.5" />
+    {/each}
+  {/if}
 </svg>
 
 <!-- ===== 結果 ===== -->
 {#if status === "done"}
   <div class="result">
-    {#if result === null}
+    {#if targetFrequency === null}
       <p class="result-message">音程を測れませんでした。もう一度弾いてみてください。</p>
-    {:else if result.tooShort}
-      <p class="result-message">
-        短すぎます（{result.duration.toFixed(1)}秒）。1秒以上のばしてください。
-      </p>
-    {:else}
-      <p class="result-score"><span class="score-number">{result.score}</span> 点</p>
-      <dl class="result-list">
-        <dt>長さ</dt>
-        <dd>{result.duration.toFixed(1)} 秒</dd>
-        <dt>平均のずれ</dt>
-        <dd class={centsClass(result.average)}>{formatCents(result.average)} セント</dd>
-        <dt>ぶれの大きさ</dt>
-        <dd>±{result.spread} セント</dd>
-      </dl>
+    {:else if mode === "longtone"}
+      <!-- ----- ロングトーンの結果 ----- -->
+      {#if longtoneResult === null}
+        <p class="result-message">音程を測れませんでした。もう一度弾いてみてください。</p>
+      {:else if longtoneResult.tooShort}
+        <p class="result-message">
+          短すぎます（{longtoneResult.duration.toFixed(1)}秒）。1秒以上のばしてください。
+        </p>
+      {:else}
+        <p class="result-score">
+          総合 <span class="score-number">{longtoneResult.score}</span> 点
+        </p>
+        <dl class="result-list">
+          <dt>目標とのずれ</dt>
+          <dd>
+            <span class={centsClass(longtoneResult.average)}>{formatCents(longtoneResult.average)} セント</span>
+            <span class="sub-score">{longtoneResult.offsetScore}点</span>
+          </dd>
+          <dt>ぶれの少なさ</dt>
+          <dd>
+            ±{longtoneResult.spread} セント
+            <span class="sub-score">{longtoneResult.spreadScore}点</span>
+          </dd>
+          <dt>長さ</dt>
+          <dd>{longtoneResult.duration.toFixed(1)} 秒</dd>
+        </dl>
+      {/if}
+    {:else if vibratoResult}
+      <!-- ----- ビブラートの結果 ----- -->
+      {#if vibratoResult.tooShort}
+        <p class="result-message">
+          短すぎます（{vibratoResult.duration.toFixed(1)}秒）。1秒以上のばしてください。
+        </p>
+      {:else if !vibratoResult.found}
+        <p class="result-message">揺れが見つかりませんでした（山と谷がそれぞれ3つ以上必要です）。もう少し長く、はっきり揺らしてみてください。</p>
+      {:else}
+        <p class="result-score">
+          総合 <span class="score-number">{vibratoResult.score}</span> 点
+        </p>
+        <dl class="result-list">
+          <dt>目標とのずれ（{reference === "top" ? "上の端" : "真ん中"}）</dt>
+          <dd>
+            <span class={centsClass(vibratoResult.offset)}>{formatCents(vibratoResult.offset)} セント</span>
+            <span class="sub-score">{vibratoResult.offsetScore}点</span>
+          </dd>
+          <dt>速さのそろい</dt>
+          <dd>
+            {formatVariation(vibratoResult.rateVariation)}
+            <span class="sub-score">{vibratoResult.rateScore}点</span>
+          </dd>
+          <dt>幅のそろい</dt>
+          <dd>
+            {formatVariation(vibratoResult.widthVariation)}
+            <span class="sub-score">{vibratoResult.widthScore}点</span>
+          </dd>
+          <dt>速さ</dt>
+          <dd>1秒に {vibratoResult.rate.toFixed(1)} 回</dd>
+          <dt>幅</dt>
+          <dd>±{Math.round(vibratoResult.width)} セント</dd>
+          <dt>長さ</dt>
+          <dd>{vibratoResult.duration.toFixed(1)} 秒</dd>
+        </dl>
+        <p class="result-note">
+          グラフの赤い点が揺れの山、青い点が谷、オレンジの点線が{reference === "top" ? "上の端" : "真ん中"}の平均の高さです。
+        </p>
+      {/if}
     {/if}
   </div>
 {/if}
@@ -464,7 +648,7 @@
     font-size: 0.9rem;
   }
 
-  /* ----- 目標を選ぶ行 ----- */
+  /* ----- 1行の設定（左に名前、右に選ぶ部分） ----- */
   .row {
     display: flex;
     align-items: flex-start;
@@ -473,10 +657,15 @@
   }
 
   .label {
-    flex: 0 0 3em;
+    flex: 0 0 4em;
     padding-top: 8px;
     font-size: 0.95rem;
     color: var(--text-sub);
+  }
+
+  .field {
+    flex: 1;
+    min-width: 0;
   }
 
   .toggle-group {
@@ -512,6 +701,17 @@
   .toggle:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* ----- 調のメニュー ----- */
+  .select {
+    width: 100%;
+    padding: 8px;
+    font-size: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card-bg);
+    color: var(--text);
   }
 
   /* ----- 今の様子 ----- */
@@ -626,6 +826,22 @@
     stroke-linecap: round;
   }
 
+  /* ビブラートの、上の端（または真ん中）の平均の高さの線 */
+  .graph-reference {
+    stroke: #e07a2f;
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+  }
+
+  /* ビブラートの山と谷の印 */
+  .mark-peak {
+    fill: #d64545;
+  }
+
+  .mark-trough {
+    fill: #3a6fd8;
+  }
+
   /* ----- 結果 ----- */
   .result {
     margin-bottom: 12px;
@@ -652,7 +868,7 @@
     color: var(--accent);
   }
 
-  /* 「長さ」「平均のずれ」「ぶれの大きさ」を、左に名前・右に値で並べる */
+  /* 項目を、左に名前・右に値と点数で並べる */
   .result-list {
     display: grid;
     grid-template-columns: auto 1fr;
@@ -668,6 +884,21 @@
     margin: 0;
     text-align: right;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* 項目ごとの点数 */
+  .sub-score {
+    display: inline-block;
+    min-width: 3.5em;
+    margin-left: 8px;
+    font-weight: bold;
+    color: var(--accent);
+  }
+
+  .result-note {
+    margin: 8px 0 0;
+    font-size: 0.8rem;
+    color: var(--text-sub);
   }
 
   /* ----- マイクが使えなかったときのメッセージ ----- */

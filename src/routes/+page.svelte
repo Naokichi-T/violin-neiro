@@ -17,8 +17,8 @@
     },
     {
       path: "/longtone",
-      title: "ロングトーン",
-      description: "長く伸ばした音のぶれを測る",
+      title: "ロングトーン・ビブラート",
+      description: "長く伸ばした音のぶれや、ビブラートの揺れを測る",
       ready: true,
     },
     {
